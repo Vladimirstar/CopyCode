@@ -1,75 +1,86 @@
-下面是一个完整的Java Maven项目，演示了使用AWS API Gateway、Lambda、Step Functions链式调用和EventBridge的服务集成，并通过Terraform部署，包含单元测试和详细注释。
+以下是一个完整的AWS Java SDK (JDK 21) Demo，包含Lambda、Step Functions、EventBridge和API Gateway，使用Maven构建，并通过Terraform部署：
 
 ### 项目结构
-```bash
-aws-demo/
+```
+aws-java-demo/
 ├── src/
 │   ├── main/
 │   │   ├── java/com/example/
-│   │   │   ├── ApiHandler.java         # API Gateway入口
-│   │   │   ├── StepFunctionStarter.java # 启动Step Functions
-│   │   │   ├── TaskHandler.java        # Step Functions任务处理
-│   │   │   └── EventBridgeHandler.java # EventBridge处理器
+│   │   │   ├── App.java                # Lambda处理程序
+│   │   │   ├── StepFunctionClient.java # Step Functions工具
+│   │   │   └── EventBridgeClient.java  # EventBridge工具
 │   │   └── resources/
 │   └── test/
 │       └── java/com/example/
-│           └── HandlerTest.java        # 单元测试
+│           └── AppTest.java            # 单元测试
 ├── terraform/
-│   ├── main.tf
-│   ├── variables.tf
-│   └── outputs.tf
-└── pom.xml
+│   ├── main.tf                         # Terraform配置
+│   ├── variables.tf                    # Terraform变量
+│   └── outputs.tf                      # Terraform输出
+├── pom.xml                             # Maven配置
+└── statemachine.json                   # Step Functions定义
 ```
 
----
-
-### 1. Maven 依赖 (pom.xml)
+### 1. Maven配置 (pom.xml)
 ```xml
-<project>
+<?xml version="1.0" encoding="UTF-8"?>
+<project xmlns="http://maven.apache.org/POM/4.0.0" xmlns:xsi="http://www.w3.org/2001/XMLSchema-instance"
+         xsi:schemaLocation="http://maven.apache.org/POM/4.0.0 http://maven.apache.org/xsd/maven-4.0.0.xsd">
     <modelVersion>4.0.0</modelVersion>
+
     <groupId>com.example</groupId>
-    <artifactId>aws-demo</artifactId>
+    <artifactId>aws-java-demo</artifactId>
     <version>1.0-SNAPSHOT</version>
     <packaging>jar</packaging>
 
+    <properties>
+        <maven.compiler.source>21</maven.compiler.source>
+        <maven.compiler.target>21</maven.compiler.target>
+        <aws.sdk.version>2.17.112</aws.sdk.version>
+        <junit.version>5.9.2</junit.version>
+    </properties>
+
     <dependencies>
-        <!-- AWS Lambda -->
+        <!-- AWS SDK -->
+        <dependency>
+            <groupId>software.amazon.awssdk</groupId>
+            <artifactId>lambda</artifactId>
+            <version>${aws.sdk.version}</version>
+        </dependency>
+        <dependency>
+            <groupId>software.amazon.awssdk</groupId>
+            <artifactId>stepfunctions</artifactId>
+            <version>${aws.sdk.version}</version>
+        </dependency>
+        <dependency>
+            <groupId>software.amazon.awssdk</groupId>
+            <artifactId>eventbridge</artifactId>
+            <version>${aws.sdk.version}</version>
+        </dependency>
+        <dependency>
+            <groupId>software.amazon.awssdk</groupId>
+            <artifactId>apigateway</artifactId>
+            <version>${aws.sdk.version}</version>
+        </dependency>
+        
+        <!-- Lambda Runtime -->
         <dependency>
             <groupId>com.amazonaws</groupId>
             <artifactId>aws-lambda-java-core</artifactId>
             <version>1.2.2</version>
         </dependency>
-        <dependency>
-            <groupId>com.amazonaws</groupId>
-            <artifactId>aws-lambda-java-events</artifactId>
-            <version>3.11.2</version>
-        </dependency>
         
-        <!-- Step Functions SDK -->
+        <!-- Unit Test -->
         <dependency>
-            <groupId>com.amazonaws</groupId>
-            <artifactId>aws-java-sdk-sfn</artifactId>
-            <version>1.12.387</version>
-        </dependency>
-        
-        <!-- JSON Processing -->
-        <dependency>
-            <groupId>com.google.code.gson</groupId>
-            <artifactId>gson</artifactId>
-            <version>2.10.1</version>
-        </dependency>
-        
-        <!-- Unit Testing -->
-        <dependency>
-            <groupId>junit</groupId>
-            <artifactId>junit</artifactId>
-            <version>4.13.2</version>
+            <groupId>org.junit.jupiter</groupId>
+            <artifactId>junit-jupiter</artifactId>
+            <version>${junit.version}</version>
             <scope>test</scope>
         </dependency>
         <dependency>
             <groupId>org.mockito</groupId>
             <artifactId>mockito-core</artifactId>
-            <version>5.3.1</version>
+            <version>4.8.0</version>
             <scope>test</scope>
         </dependency>
     </dependencies>
@@ -79,10 +90,7 @@ aws-demo/
             <plugin>
                 <groupId>org.apache.maven.plugins</groupId>
                 <artifactId>maven-shade-plugin</artifactId>
-                <version>3.4.1</version>
-                <configuration>
-                    <createDependencyReducedPom>false</createDependencyReducedPom>
-                </configuration>
+                <version>3.3.0</version>
                 <executions>
                     <execution>
                         <phase>package</phase>
@@ -97,201 +105,142 @@ aws-demo/
 </project>
 ```
 
----
-
-### 2. Java 代码 (带详细注释)
-
-#### 2.1 API Gateway 入口 (ApiHandler.java)
+### 2. Lambda处理程序 (App.java)
 ```java
 package com.example;
 
 import com.amazonaws.services.lambda.runtime.Context;
 import com.amazonaws.services.lambda.runtime.RequestHandler;
-import com.amazonaws.services.lambda.runtime.events.APIGatewayProxyRequestEvent;
-import com.amazonaws.services.lambda.runtime.events.APIGatewayProxyResponseEvent;
-import com.google.gson.Gson;
-
-/**
- * 处理API Gateway请求并触发Step Functions工作流
- */
-public class ApiHandler implements RequestHandler<APIGatewayProxyRequestEvent, APIGatewayProxyResponseEvent> {
-
-    private static final Gson GSON = new Gson();
-    
-    @Override
-    public APIGatewayProxyResponseEvent handleRequest(APIGatewayProxyRequestEvent input, Context context) {
-        // 1. 解析请求体
-        String requestBody = input.getBody();
-        InputModel data = GSON.fromJson(requestBody, InputModel.class);
-        
-        // 2. 触发Step Functions工作流
-        StepFunctionStarter starter = new StepFunctionStarter();
-        String executionArn = starter.startExecution(data);
-        
-        // 3. 返回响应
-        return new APIGatewayProxyResponseEvent()
-            .withStatusCode(200)
-            .withBody("{\"executionArn\": \"" + executionArn + "\"}");
-    }
-    
-    // 输入数据模型
-    public static class InputModel {
-        private String message;
-        // 其他字段...
-    }
-}
-```
-
-#### 2.2 Step Functions 启动器 (StepFunctionStarter.java)
-```java
-package com.example;
-
-import com.amazonaws.services.stepfunctions.AWSStepFunctions;
-import com.amazonaws.services.stepfunctions.AWSStepFunctionsClientBuilder;
-import com.amazonaws.services.stepfunctions.model.StartExecutionRequest;
-import com.amazonaws.services.stepfunctions.model.StartExecutionResult;
-
-/**
- * 启动Step Functions状态机执行
- */
-public class StepFunctionStarter {
-
-    // 状态机ARN通过环境变量注入
-    private static final String STATE_MACHINE_ARN = System.getenv("STATE_MACHINE_ARN");
-    
-    public String startExecution(ApiHandler.InputModel input) {
-        AWSStepFunctions client = AWSStepFunctionsClientBuilder.defaultClient();
-        
-        // 构建输入JSON
-        String inputJson = "{\"message\": \"" + input.message + "\"}";
-        
-        // 启动状态机执行
-        StartExecutionRequest request = new StartExecutionRequest()
-            .withStateMachineArn(STATE_MACHINE_ARN)
-            .withInput(inputJson);
-        
-        StartExecutionResult result = client.startExecution(request);
-        return result.getExecutionArn();
-    }
-}
-```
-
-#### 2.3 Step Functions 任务处理器 (TaskHandler.java)
-```java
-package com.example;
-
-import com.amazonaws.services.lambda.runtime.Context;
-import com.amazonaws.services.lambda.runtime.RequestHandler;
-import com.google.gson.Gson;
 import java.util.Map;
 
-/**
- * Step Functions状态机的任务处理器
- */
-public class TaskHandler implements RequestHandler<Map<String, Object>, String> {
+public class App implements RequestHandler<Map<String, Object>, String> {
 
-    private static final Gson GSON = new Gson();
-    
     @Override
     public String handleRequest(Map<String, Object> input, Context context) {
-        // 1. 解析输入
-        String message = (String) input.get("message");
+        // 1. 从API Gateway接收请求
+        System.out.println("Received input: " + input);
         
-        // 2. 处理业务逻辑
-        String processedMessage = "Processed: " + message.toUpperCase();
+        // 2. 触发Step Functions
+        String executionArn = StepFunctionClient.startExecution(
+            "arn:aws:states:us-east-1:123456789012:stateMachine:MyStateMachine",
+            "{\"key\":\"value\"}"
+        );
         
-        // 3. 返回结果（将作为下一步的输入）
-        return processedMessage;
+        // 3. 发送EventBridge事件
+        EventBridgeClient.putEvent(
+            "demo-bus",
+            "DemoEventType",
+            "{\"status\":\"STARTED\",\"executionArn\":\"" + executionArn + "\"}"
+        );
+        
+        return "{\"status\":\"success\",\"executionArn\":\"" + executionArn + "\"}";
     }
 }
 ```
 
-#### 2.4 EventBridge 处理器 (EventBridgeHandler.java)
+### 3. Step Functions工具类 (StepFunctionClient.java)
 ```java
 package com.example;
 
-import com.amazonaws.services.lambda.runtime.Context;
-import com.amazonaws.services.lambda.runtime.RequestHandler;
-import com.amazonaws.services.lambda.runtime.events.ScheduledEvent;
+import software.amazon.awssdk.services.stepfunctions.SfnClient;
+import software.amazon.awssdk.services.stepfunctions.model.StartExecutionRequest;
+import software.amazon.awssdk.services.stepfunctions.model.StartExecutionResponse;
 
-/**
- * 处理EventBridge定时触发的事件
- */
-public class EventBridgeHandler implements RequestHandler<ScheduledEvent, String> {
-
-    @Override
-    public String handleRequest(ScheduledEvent event, Context context) {
-        // 处理定时任务逻辑
-        return "EventBridge event processed at " + event.getTime();
-    }
-}
-```
-
----
-
-### 3. 单元测试 (HandlerTest.java)
-```java
-package com.example;
-
-import static org.junit.Assert.*;
-import static org.mockito.Mockito.*;
-
-import com.amazonaws.services.lambda.runtime.Context;
-import com.amazonaws.services.stepfunctions.model.StartExecutionResult;
-import java.util.HashMap;
-import java.util.Map;
-import org.junit.Test;
-import org.mockito.MockedStatic;
-
-public class HandlerTest {
-
-    private final Context context = mock(Context.class);
-
-    @Test
-    public void testApiHandler() {
-        // 准备输入
-        ApiHandler.InputModel inputModel = new ApiHandler.InputModel();
-        inputModel.message = "test";
-        
-        // 模拟StepFunctionStarter
-        try (MockedStatic<StepFunctionStarter> mocked = mockStatic(StepFunctionStarter.class)) {
-            StepFunctionStarter starter = mock(StepFunctionStarter.class);
-            when(starter.startExecution(inputModel)).thenReturn("arn:test");
-            mocked.when(StepFunctionStarter::new).thenReturn(starter);
+public class StepFunctionClient {
+    public static String startExecution(String stateMachineArn, String input) {
+        try (SfnClient sfnClient = SfnClient.create()) {
+            StartExecutionRequest request = StartExecutionRequest.builder()
+                .stateMachineArn(stateMachineArn)
+                .input(input)
+                .build();
             
-            // 执行测试
-            ApiHandler handler = new ApiHandler();
-            APIGatewayProxyResponseEvent response = handler.handleRequest(
-                new APIGatewayProxyRequestEvent().withBody("{\"message\":\"test\"}"), 
-                context
-            );
-            
-            // 验证结果
-            assertEquals(200, response.getStatusCode());
-            assertTrue(response.getBody().contains("arn:test"));
+            StartExecutionResponse response = sfnClient.startExecution(request);
+            return response.executionArn();
         }
     }
+}
+```
 
-    @Test
-    public void testTaskHandler() {
-        // 准备输入
-        Map<String, Object> input = new HashMap<>();
-        input.put("message", "hello");
-        
-        // 执行测试
-        TaskHandler handler = new TaskHandler();
-        String result = handler.handleRequest(input, context);
-        
-        // 验证结果
-        assertEquals("Processed: HELLO", result);
+### 4. EventBridge工具类 (EventBridgeClient.java)
+```java
+package com.example;
+
+import software.amazon.awssdk.services.eventbridge.EventBridgeClient;
+import software.amazon.awssdk.services.eventbridge.model.PutEventsRequest;
+import software.amazon.awssdk.services.eventbridge.model.PutEventsRequestEntry;
+
+public class EventBridgeClient {
+    public static void putEvent(String eventBusName, String detailType, String detail) {
+        try (EventBridgeClient ebClient = EventBridgeClient.create()) {
+            PutEventsRequestEntry entry = PutEventsRequestEntry.builder()
+                .eventBusName(eventBusName)
+                .source("com.example.demo")
+                .detailType(detailType)
+                .detail(detail)
+                .build();
+            
+            ebClient.putEvents(PutEventsRequest.builder()
+                .entries(entry)
+                .build());
+        }
     }
 }
 ```
 
----
+### 5. 单元测试 (AppTest.java)
+```java
+package com.example;
 
-### 4. Terraform 部署代码 (terraform/main.tf)
+import org.junit.jupiter.api.Test;
+import org.mockito.MockedStatic;
+import org.mockito.Mockito;
+import java.util.Collections;
+import static org.junit.jupiter.api.Assertions.*;
+import static org.mockito.ArgumentMatchers.*;
 
+class AppTest {
+    @Test
+    void testLambdaHandler() {
+        // Mock静态方法
+        try (MockedStatic<StepFunctionClient> mockedSfn = Mockito.mockStatic(StepFunctionClient.class);
+             MockedStatic<EventBridgeClient> mockedEb = Mockito.mockStatic(EventBridgeClient.class)) {
+            
+            // 配置模拟行为
+            mockedSfn.when(() -> StepFunctionClient.startExecution(anyString(), anyString()))
+                     .thenReturn("arn:aws:states:::execution-arn");
+            
+            // 执行测试
+            App app = new App();
+            String result = app.handleRequest(Collections.singletonMap("key", "value"), null);
+            
+            // 验证结果
+            assertTrue(result.contains("success"));
+            assertTrue(result.contains("execution-arn"));
+            
+            // 验证方法调用
+            mockedSfn.verify(() -> StepFunctionClient.startExecution(anyString(), anyString()));
+            mockedEb.verify(() -> EventBridgeClient.putEvent(anyString(), anyString(), anyString()));
+        }
+    }
+}
+```
+
+### 6. Step Functions定义 (statemachine.json)
+```json
+{
+  "Comment": "Demo State Machine",
+  "StartAt": "HelloWorld",
+  "States": {
+    "HelloWorld": {
+      "Type": "Pass",
+      "Result": "Hello from Step Functions!",
+      "End": true
+    }
+  }
+}
+```
+
+### 7. Terraform配置 (terraform/main.tf)
 ```hcl
 terraform {
   required_providers {
@@ -306,82 +255,50 @@ provider "aws" {
   region = "us-east-1"
 }
 
-# 1. 创建Lambda函数
-resource "aws_lambda_function" "api_handler" {
-  filename      = "../target/aws-demo-1.0-SNAPSHOT.jar"
-  function_name = "ApiHandler"
+# Lambda函数
+resource "aws_lambda_function" "demo_lambda" {
+  filename      = "../target/aws-java-demo-1.0-SNAPSHOT.jar"
+  function_name = "java-demo-handler"
   role          = aws_iam_role.lambda_role.arn
-  handler       = "com.example.ApiHandler::handleRequest"
-  runtime       = "java11"
+  handler       = "com.example.App::handleRequest"
+  runtime       = "java21"
+  memory_size   = 512
+  timeout       = 30
 }
 
-resource "aws_lambda_function" "task_handler" {
-  filename      = "../target/aws-demo-1.0-SNAPSHOT.jar"
-  function_name = "TaskHandler"
-  role          = aws_iam_role.lambda_role.arn
-  handler       = "com.example.TaskHandler::handleRequest"
-  runtime       = "java11"
+# Step Functions
+resource "aws_sfn_state_machine" "demo_sfn" {
+  name     = "MyStateMachine"
+  role_arn = aws_iam_role.sfn_role.arn
+  definition = file("../statemachine.json")
 }
 
-# 2. 创建Step Functions状态机
-resource "aws_sfn_state_machine" "demo_state_machine" {
-  name     = "DemoStateMachine"
-  role_arn = aws_iam_role.stepfunctions_role.arn
-
-  definition = <<EOF
-{
-  "Comment": "链式调用示例",
-  "StartAt": "FirstTask",
-  "States": {
-    "FirstTask": {
-      "Type": "Task",
-      "Resource": "${aws_lambda_function.task_handler.arn}",
-      "Next": "SecondTask"
-    },
-    "SecondTask": {
-      "Type": "Task",
-      "Resource": "${aws_lambda_function.task_handler.arn}",
-      "End": true
-    }
-  }
-}
-EOF
+# EventBridge总线
+resource "aws_cloudwatch_event_bus" "demo_bus" {
+  name = "demo-bus"
 }
 
-# 3. 创建API Gateway
+# API Gateway
 resource "aws_apigatewayv2_api" "demo_api" {
-  name          = "demo-api"
+  name          = "demo-http-api"
   protocol_type = "HTTP"
 }
 
 resource "aws_apigatewayv2_integration" "lambda_integration" {
   api_id           = aws_apigatewayv2_api.demo_api.id
   integration_type = "AWS_PROXY"
-  integration_uri  = aws_lambda_function.api_handler.invoke_arn
+  integration_uri  = aws_lambda_function.demo_lambda.invoke_arn
 }
 
-resource "aws_apigatewayv2_route" "post_route" {
+resource "aws_apigatewayv2_route" "demo_route" {
   api_id    = aws_apigatewayv2_api.demo_api.id
-  route_key = "POST /start"
+  route_key = "GET /trigger"
   target    = "integrations/${aws_apigatewayv2_integration.lambda_integration.id}"
 }
 
-# 4. 创建EventBridge规则
-resource "aws_cloudwatch_event_rule" "daily_trigger" {
-  name                = "daily-lambda-trigger"
-  schedule_expression = "rate(1 day)"
-}
-
-resource "aws_cloudwatch_event_target" "trigger_stepfunctions" {
-  rule      = aws_cloudwatch_event_rule.daily_trigger.name
-  target_id = "TriggerStepFunctions"
-  arn       = aws_sfn_state_machine.demo_state_machine.arn
-}
-
-# 5. IAM角色配置
+# IAM角色
 resource "aws_iam_role" "lambda_role" {
-  name = "lambda_execution_role"
-
+  name = "lambda-execution-role"
   assume_role_policy = jsonencode({
     Version = "2012-10-17"
     Statement = [{
@@ -392,16 +309,15 @@ resource "aws_iam_role" "lambda_role" {
       }
     }]
   })
+  managed_policy_arns = [
+    "arn:aws:iam::aws:policy/service-role/AWSLambdaBasicExecutionRole",
+    "arn:aws:iam::aws:policy/AWSStepFunctionsFullAccess",
+    "arn:aws:iam::aws:policy/AmazonEventBridgeFullAccess"
+  ]
 }
 
-resource "aws_iam_role_policy_attachment" "lambda_basic" {
-  role       = aws_iam_role.lambda_role.name
-  policy_arn = "arn:aws:iam::aws:policy/service-role/AWSLambdaBasicExecutionRole"
-}
-
-resource "aws_iam_role" "stepfunctions_role" {
-  name = "stepfunctions_execution_role"
-
+resource "aws_iam_role" "sfn_role" {
+  name = "stepfunctions-execution-role"
   assume_role_policy = jsonencode({
     Version = "2012-10-17"
     Statement = [{
@@ -412,62 +328,72 @@ resource "aws_iam_role" "stepfunctions_role" {
       }
     }]
   })
-}
-
-resource "aws_iam_role_policy" "stepfunctions_policy" {
-  name = "invoke_lambda_policy"
-  role = aws_iam_role.stepfunctions_role.id
-
-  policy = jsonencode({
-    Version = "2012-10-17"
-    Statement = [{
-      Action   = "lambda:InvokeFunction"
-      Effect   = "Allow"
-      Resource = aws_lambda_function.task_handler.arn
-    }]
-  })
+  managed_policy_arns = [
+    "arn:aws:iam::aws:policy/AWSLambda_FullAccess"
+  ]
 }
 ```
 
----
+### 8. 部署和运行步骤
 
-### 5. 部署与运行流程
-
-#### 5.1 本地构建与测试
+**1. 构建项目**
 ```bash
-# 构建项目
 mvn clean package
-
-# 运行单元测试
-mvn test
 ```
 
-#### 5.2 Terraform 部署
+**2. 初始化Terraform**
 ```bash
 cd terraform
 terraform init
+```
+
+**3. 部署到AWS**
+```bash
 terraform apply -auto-approve
 ```
 
-#### 5.3 测试API
+**4. 本地测试Lambda**
 ```bash
-curl -X POST https://<api-gateway-url>/start \
-  -H "Content-Type: application/json" \
-  -d '{"message": "Hello AWS"}'
+# 使用SAM CLI本地测试
+sam local invoke -e event.json
+
+# event.json示例:
+{
+  "queryStringParameters": {
+    "name": "test"
+  }
+}
 ```
 
-#### 5.4 验证工作流
-1. 在AWS控制台查看Step Functions执行历史
-2. 检查CloudWatch日志中的Lambda输出
-3. 验证EventBridge每日触发状态机
+**5. 调用API Gateway端点**
+```bash
+# 获取API端点URL
+terraform output api_url
 
----
+# 发送请求
+curl "<api_url>/trigger"
+```
+
+**6. 验证流程**
+1. API Gateway触发Lambda
+2. Lambda启动Step Functions执行
+3. Lambda发送EventBridge事件
+4. 在AWS控制台查看:
+   - Step Functions执行历史
+   - EventBridge事件总线
+   - CloudWatch日志
 
 ### 架构说明
-1. **API Gateway** 接收HTTP请求
-2. **Lambda (ApiHandler)** 启动Step Functions工作流
-3. **Step Functions** 链式调用Lambda任务处理器
-4. **EventBridge** 定时触发状态机执行
-5. **Terraform** 统一管理所有基础设施
+1. **API Gateway**：接收HTTP请求并触发Lambda
+2. **Lambda**：Java处理程序协调整个流程
+3. **Step Functions**：执行定义的工作流
+4. **EventBridge**：事件总线用于服务间通信
 
-该演示完整覆盖了AWS无服务器核心服务，通过Java实现业务逻辑，Terraform实现IaC，适合作为复杂工作流的入门模板。
+### 注意事项
+1. 确保AWS凭证已配置（`~/.aws/credentials`）
+2. JDK 21需预先安装
+3. Terraform v1.0+ 和 AWS CLI v2+ 需预先安装
+4. 测试时需根据实际AWS账户修改ARN
+5. 使用`terraform destroy`清理资源
+
+这个Demo展示了AWS服务间的集成，使用Java 21现代特性，并通过Terraform实现基础设施即代码(IaC)。
