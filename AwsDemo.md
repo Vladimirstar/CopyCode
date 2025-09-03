@@ -1,5 +1,4 @@
-【个人代码提交要求及代码量摸底问卷】
-各位小伙伴，你是否清楚客户对个人代码量的要求呢？请大家根据项目要求和个人代码量实际情况填写welink问卷，场内可以通过link小工具来查询个人代码量：https://aitool-gw-dev.hsbc-12270352-codega-dev.dev.gcp.cloud.uk.hsbc/code-report-app-internal/individual。填写完成时间：本周五下班前。  @所有人  
+
 以下是一个使用Java和AWS服务的简单Demo实现，包括API Gateway、Lambda、Step Functions和EventBridge。我将逐步解释实现步骤并提供完整代码。
 
 ### 1. Maven依赖 (pom.xml)
